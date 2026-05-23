@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MediReference AI | Medical RAG Workspace</title>
+    <link rel="stylesheet" href="/static/styles.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet">
+    <meta name="description" content="Medical RAG assistant with saved chat history, prescription analysis, lab report interpretation, and multilingual responses.">
+</head>
+<body>
+    <div class="page-shell">
+        <aside class="sidebar">
+            <div class="brand-card">
+                <div class="brand-mark">MR</div>
+                <div>
+                    <p class="eyebrow">Clinical Retrieval System</p>
+                    <h1>MediReference AI</h1>
+                </div>
+            </div>
+
+            <div class="panel compact-panel status-panel">
+                <div class="status-inline">
+                    <span class="status-chip">Status <strong class="status-value online" id="sys-status">Checking...</strong></span>
+                    <span class="status-chip">Indexed <strong class="status-value" id="db-count">...</strong></span>
+                    <span class="status-chip">Provider <strong class="status-value" id="provider-name">...</strong></span>
+                </div>
+                <button id="reingest-btn" class="ghost-btn">Rebuild Local Index</button>
+            </div>
+
+            <div class="panel compact-panel language-panel">
+                <div class="language-row">
+                    <p class="panel-title">Response Language</p>
+                    <select id="language-select" class="language-select">
+                        <option value="English">English</option>
+                        <option value="Hindi">Hindi</option>
+                        <option value="Telugu">Telugu</option>
+                        <option value="Tamil">Tamil</option>
+                        <option value="Kannada">Kannada</option>
+                        <option value="Malayalam">Malayalam</option>
+                        <option value="Bengali">Bengali</option>
+                    </select>
+                </div>
+            </div>
+
+            <!-- <div class="panel domains-panel">
+                <p class="panel-title">Domains</p>
+                <button class="filter-btn active" data-domain="">All Domains</button>
+                <div id="domain-list" class="filter-list"></div>
+            </div> -->
+
+            <div class="panel history-panel">
+                <div class="history-header">
+                    <p class="panel-title">Saved History</p>
+                    <button id="new-chat-btn" class="mini-btn">New Chat</button>
+                </div>
+
+                <div class="history-group">
+                    <h3>Chats</h3>
+                    <div id="chat-history" class="history-list"></div>
+                </div>
+
+                <div class="history-group">
+                    <h3>Prescriptions</h3>
+                    <div id="prescription-history" class="history-list"></div>
+                </div>
+
+                <div class="history-group">
+                    <h3>Lab Reports</h3>
+                    <div id="lab-history" class="history-list"></div>
+                </div>
+            </div>
+        </aside>
+
+        <main class="main-stage">
+            <section class="workspace">
+                <div class="tab-row">
+                    <button class="tab-btn active" data-tab="chat-tab">Ask Questions</button>
+                    <button class="tab-btn" data-tab="image-tab">Analyze Prescription</button>
+                    <button class="tab-btn" data-tab="lab-tab">Interpret Lab Report</button>
+                </div>
+
+                <section class="tab-panel active" id="chat-tab">
+                    <div class="panel session-banner">
+                        <div>
+                            <p class="panel-title">Current Chat</p>
+                            <h3 id="chat-title">New Chat</h3>
+                        </div>
+                        <p id="chat-meta"></p>
+                    </div>
+
+                    <div class="messages-container" id="chat-messages"></div>
+
+                    <div class="input-panel">
+                        <div class="input-wrapper">
+                            <input type="text" id="user-input" placeholder="Ask about a guideline, medicine, lab marker, screening rule, or clinical protocol..." autocomplete="off">
+                            <button id="send-btn" class="primary-btn">Send</button>
+                        </div>
+                        <div class="example-prompts" aria-hidden="true" >
+                            <span>Sample Question:</span>
+                            <span>"HbA1c target for nonpregnant adults?"</span>
+                            <span>"Why is metformin commonly prescribed?"</span>
+                            <span>"When is COPD diagnosed on spirometry?"</span>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="tab-panel" id="image-tab">
+                    <div class="two-column-layout">
+                        <div class="upload-card">
+                            <p class="panel-title">Upload Prescription Image</p>
+                            <label for="prescription-file" class="upload-dropzone">
+                                <span class="dropzone-title">Drop an image here or click to choose</span>
+                                <span class="dropzone-copy">PNG, JPG, or WEBP. Best results come from a bright, close, readable photo.</span>
+                                <input type="file" id="prescription-file" accept=".png,.jpg,.jpeg,.webp,image/png,image/jpeg,image/webp" hidden>
+                            </label>
+                            <div class="upload-meta">
+                                <span id="file-name">No file selected</span>
+                                <button id="analyze-btn" class="primary-btn">Analyze Image</button>
+                            </div>
+                        </div>
+
+                        <div class="result-card" id="prescription-results">
+                            <div class="empty-state">
+                                <h3>No prescription selected yet</h3>
+                                <p>Upload a prescription or open a saved prescription record from the history panel.</p>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+
+                <section class="tab-panel" id="lab-tab">
+                    <div class="two-column-layout">
+                        <div class="upload-card">
+                            <p class="panel-title">Paste Lab Report Text</p>
+                            <textarea id="lab-report-input" class="lab-input" placeholder="Paste the lab report text here, including values, units, and reference ranges if available."></textarea>
+                            <button id="interpret-lab-btn" class="primary-btn">Interpret Lab Report</button>
+
+                            <div class="divider-line"></div>
+
+                            <p class="panel-title">Upload Lab Report Image Or PDF</p>
+                            <label for="lab-report-file" class="upload-dropzone">
+                                <span class="dropzone-title">Choose a lab report image or PDF</span>
+                                <span class="dropzone-copy">Supports PNG, JPG, WEBP, and PDF. PDFs with embedded text are read directly; scanned PDFs are OCR'd with Groq vision.</span>
+                                <input type="file" id="lab-report-file" accept=".png,.jpg,.jpeg,.webp,.pdf,image/png,image/jpeg,image/webp,application/pdf" hidden>
+                            </label>
+                            <div class="upload-meta">
+                                <span id="lab-file-name">No file selected</span>
+                                <button id="analyze-lab-file-btn" class="primary-btn">Interpret Uploaded File</button>
+                            </div>
+                        </div>
+
+                        <div class="result-card" id="lab-results">
+                            <div class="empty-state">
+                                <h3>No lab report interpreted yet</h3>
+                                <p>Paste a report or open a saved lab interpretation from the history panel.</p>
+                            </div>
+                        </div>
+                    </div>
+                </section>
+            </section>
+        </main>
+    </div>
+
+    <template id="msg-template-user">
+        <div class="message user">
+            <div class="msg-content"></div>
+        </div>
+    </template>
+
+    <template id="msg-template-ai">
+        <div class="message ai">
+            <div class="msg-content"></div>
+            <div class="meta-strip">
+                <span class="confidence">Confidence: <span class="conf-val"></span></span>
+                <span class="guardrail-pill"></span>
+            </div>
+            <div class="sources-grid"></div>
+        </div>
+    </template>
+
+    <div id="source-modal" class="modal hidden">
+        <div class="modal-backdrop" data-close-modal="true"></div>
+        <div class="modal-dialog">
+            <div class="modal-header">
+                <div>
+                    <p class="panel-title">Source Detail</p>
+                    <h3 id="modal-title">Source</h3>
+                </div>
+                <button id="close-modal-btn" class="mini-btn" type="button">Close</button>
+            </div>
+            <div class="modal-body">
+                <p class="footnote" id="modal-meta"></p>
+                <pre id="modal-content"></pre>
+            </div>
+        </div>
+    </div>
+
+    <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
+    <script src="/static/app.js"></script>
+</body>
+</html>
