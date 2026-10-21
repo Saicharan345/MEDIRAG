@@ -125,23 +125,45 @@ async def analyze_prescription(
 ):
     try:
         image_bytes = await file.read()
+        if not image_bytes or len(image_bytes) == 0:
+            raise HTTPException(status_code=400, detail="The uploaded file is empty. Please choose a valid prescription image.")
+
+        content_type = (file.content_type or "").lower().strip()
+        filename = (file.filename or "").lower().strip()
+
+        # Infer MIME type from filename extension or magic bytes if content_type is missing/generic
+        if not content_type or content_type in {"application/octet-stream", "binary/octet-stream"}:
+            if filename.endswith(".png") or image_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+                content_type = "image/png"
+            elif filename.endswith((".jpg", ".jpeg")) or image_bytes.startswith(b"\xff\xd8\xff"):
+                content_type = "image/jpeg"
+            elif filename.endswith(".webp") or (image_bytes.startswith(b"RIFF") and image_bytes[8:12] == b"WEBP"):
+                content_type = "image/webp"
+
+        if content_type == "image/jpg":
+            content_type = "image/jpeg"
+
         max_size_bytes = config.MAX_IMAGE_SIZE_MB * 1024 * 1024
-        is_valid, reason = guardrails.validate_image(file.content_type or "", len(image_bytes), max_size_bytes)
+        is_valid, reason = guardrails.validate_image(content_type, len(image_bytes), max_size_bytes)
         if not is_valid:
             raise HTTPException(status_code=400, detail=reason)
 
         return prescription_service.analyze(
             image_bytes=image_bytes,
-            mime_type=file.content_type or "image/jpeg",
+            mime_type=content_type,
             file_name=file.filename or "prescription-image",
             language=language,
         )
     except HTTPException:
         raise
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        err_msg = str(exc)
+        if "Groq" in err_msg or "rate limit" in err_msg.lower() or "api key" in err_msg.lower():
+            raise HTTPException(status_code=502, detail=err_msg)
+        raise HTTPException(status_code=400, detail=err_msg)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        print(f"[PRESCRIPTION ERROR] Unexpected server error: {type(exc).__name__}: {exc}")
+        raise HTTPException(status_code=500, detail="Internal server error while analyzing prescription.")
 
 
 @app.get("/api/prescriptions", response_model=list[SavedPrescriptionRecord])
@@ -183,7 +205,32 @@ async def interpret_lab_report_file(
 ):
     try:
         file_bytes = await file.read()
-        content_type = file.content_type or ""
+        if not file_bytes or len(file_bytes) == 0:
+            raise HTTPException(status_code=400, detail="The uploaded file is empty. Please choose a valid lab report file.")
+
+        content_type = (file.content_type or "").lower().strip()
+        filename = (file.filename or "").lower().strip()
+
+        # Infer MIME type from filename extension or magic bytes if content_type is missing/generic
+        if not content_type or content_type in {"application/octet-stream", "binary/octet-stream"}:
+            if filename.endswith(".pdf") or file_bytes.startswith(b"%PDF"):
+                content_type = "application/pdf"
+            elif filename.endswith(".png") or file_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
+                content_type = "image/png"
+            elif filename.endswith((".jpg", ".jpeg")) or file_bytes.startswith(b"\xff\xd8\xff"):
+                content_type = "image/jpeg"
+            elif filename.endswith(".webp") or (file_bytes.startswith(b"RIFF") and file_bytes[8:12] == b"WEBP"):
+                content_type = "image/webp"
+
+        if content_type == "image/jpg":
+            content_type = "image/jpeg"
+
+        valid_mimes = {"application/pdf", "image/png", "image/jpeg", "image/webp"}
+        if content_type not in valid_mimes:
+            raise HTTPException(
+                status_code=400,
+                detail=f"Unsupported file type ({content_type or 'unknown'}). Please upload a PNG, JPG, WEBP, or PDF lab report.",
+            )
 
         if content_type == "application/pdf":
             max_size_bytes = config.MAX_PDF_SIZE_MB * 1024 * 1024
@@ -203,9 +250,15 @@ async def interpret_lab_report_file(
     except HTTPException:
         raise
     except ValueError as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        msg = str(exc)
+        if "Groq API error" in msg or "Groq Vision" in msg:
+            raise HTTPException(status_code=502, detail=f"AI service failure: {msg}")
+        raise HTTPException(status_code=400, detail=msg)
     except Exception as exc:
-        raise HTTPException(status_code=500, detail=str(exc))
+        msg = str(exc)
+        if "Groq" in msg or "API" in msg:
+            raise HTTPException(status_code=502, detail=f"AI provider communication error: {msg}")
+        raise HTTPException(status_code=500, detail=f"Server error while interpreting lab report: {msg}")
 
 
 @app.get("/api/lab-reports", response_model=list[SavedLabReportRecord])

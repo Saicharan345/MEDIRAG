@@ -42,11 +42,14 @@ def ingest_guidelines():
     guidelines = []
     for json_file in json_files:
         print(f"Loading data from {json_file}...")
-        with open(json_file, 'r', encoding='utf-8') as f:
-            data = json.load(f)
-            records = data.get("guidelines")
-            if isinstance(records, list):
-                guidelines.extend(records)
+        try:
+            with open(json_file, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+                records = data.get("guidelines")
+                if isinstance(records, list):
+                    guidelines.extend(records)
+        except Exception as exc:
+            print(f"Skipping {json_file} due to read/parse error: {exc}")
     
     # Reset collection for fresh start
     vector_store.reset_collection()

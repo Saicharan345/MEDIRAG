@@ -171,8 +171,22 @@ class HistoryStore:
         return datetime.now(timezone.utc).isoformat()
 
     def _read(self) -> Dict[str, Any]:
-        with open(self.path, "r", encoding="utf-8") as handle:
-            return json.load(handle)
+        default_payload = {"chat_sessions": [], "prescriptions": [], "lab_reports": []}
+        if not os.path.exists(self.path):
+            self._write(default_payload)
+            return default_payload
+        try:
+            with open(self.path, "r", encoding="utf-8") as handle:
+                data = json.load(handle)
+                if not isinstance(data, dict):
+                    data = default_payload
+                data.setdefault("chat_sessions", [])
+                data.setdefault("prescriptions", [])
+                data.setdefault("lab_reports", [])
+                return data
+        except Exception:
+            self._write(default_payload)
+            return default_payload
 
     def _write(self, payload: Dict[str, Any]):
         with open(self.path, "w", encoding="utf-8") as handle:

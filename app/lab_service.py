@@ -26,6 +26,7 @@ class LabReportService:
         if not cleaned:
             raise ValueError("Please paste a lab report or lab values to interpret.")
 
+        print("[LAB REPORT] Starting RAG interpretation")
         search_query = self._normalize_search_query(cleaned, language)
         search_results = vector_store.query(search_query, n_results=config.TOP_K, domain_filter="Lab Medicine")
         contexts = search_results.get("documents", [[]])[0]
@@ -48,6 +49,11 @@ Report text:
 
 Lab reference context:
 {context_str}
+
+Instructions:
+- Keep the interpretation structured, clear, and concise (about 350-500 words).
+- Under Important Findings, prioritize flagged and abnormal values with their specific test names, results, units, and reference ranges, and summarize normal panels briefly.
+- Include sections: Summary, Important Findings, Limitations, Safety Notes.
 
 Return valid JSON with this shape:
 {{
@@ -87,26 +93,77 @@ Return valid JSON with this shape:
         return self._save_response(response, markers, file_name, language)
 
     def interpret_file(self, file_bytes: bytes, content_type: str, file_name: str, language: str = "English") -> LabReportResponse:
-        if content_type in {"image/png", "image/jpeg", "image/jpg", "image/webp"}:
-            extracted_text = self._extract_text_from_image(file_bytes, content_type)
-            warnings = []
-        elif content_type == "application/pdf":
-            extracted_text = document_parser.extract_pdf_text(file_bytes)
-            warnings = []
-            if len(extracted_text) < 80:
-                page_images = document_parser.render_pdf_pages(file_bytes)
-                ocr_parts = []
-                for page_index, image_bytes in enumerate(page_images):
-                    ocr_text = self._extract_text_from_image(image_bytes, "image/png", page_number=page_index + 1)
-                    if ocr_text:
-                        ocr_parts.append(f"Page {page_index + 1}:\n{ocr_text}")
-                if ocr_parts:
-                    extracted_text = "\n\n".join(ocr_parts)
-                    warnings.append("This PDF looked image-based, so OCR was used instead of embedded PDF text.")
+        file_size = len(file_bytes) if file_bytes else 0
+        print(f"[LAB REPORT] File received: {file_name}")
+        print(f"[LAB REPORT] Content type: {content_type}")
+        print(f"[LAB REPORT] File size: {file_size} bytes")
+
+        if not file_bytes or file_size == 0:
+            raise ValueError("The uploaded file is empty. Please upload a valid lab report file.")
+
+        content_type_lower = (content_type or "").lower()
+        file_name_lower = (file_name or "").lower()
+        warnings: List[str] = []
+
+        is_pdf = content_type_lower == "application/pdf" or file_name_lower.endswith(".pdf") or file_bytes.startswith(b"%PDF")
+        is_image = any(img_type in content_type_lower for img_type in ["image/png", "image/jpeg", "image/jpg", "image/webp"]) or any(file_name_lower.endswith(ext) for ext in [".png", ".jpg", ".jpeg", ".webp"])
+
+        if is_pdf:
+            try:
+                page_count = document_parser.get_page_count(file_bytes)
+                print(f"[LAB REPORT] PDF pages: {page_count}")
+                if page_count == 0:
+                    raise ValueError("The uploaded PDF has no pages.")
+            except Exception as exc:
+                raise ValueError(f"Corrupted or invalid PDF file: {exc}") from exc
+
+            extracted_text, _ = document_parser.extract_pdf_text_with_meta(file_bytes)
+            print(f"[LAB REPORT] Extracted text length: {len(extracted_text)}")
+
+            # Check if extracted text is usable (> 60 characters with alphanumeric content)
+            has_usable_text = len(extracted_text.strip()) >= 60 and bool(re.search(r"[a-zA-Z0-9]{3,}", extracted_text))
+
+            if has_usable_text:
+                print("[LAB REPORT] Using direct PDF text extraction")
+            else:
+                print("[LAB REPORT] No usable PDF text found; using OCR")
+                try:
+                    page_images = document_parser.render_pdf_pages(file_bytes)
+                    ocr_parts = []
+                    for page_index, page_img in enumerate(page_images):
+                        ocr_text = self._extract_text_from_image(page_img, "image/png", page_number=page_index + 1)
+                        if ocr_text:
+                            ocr_parts.append(f"Page {page_index + 1}:\n{ocr_text}")
+                    if ocr_parts:
+                        extracted_text = "\n\n".join(ocr_parts)
+                        warnings.append("This PDF looked image-based, so OCR was used instead of embedded PDF text.")
+                    print(f"[LAB REPORT] OCR text length: {len(extracted_text)}")
+                except Exception as exc:
+                    raise ValueError(f"OCR processing failed on PDF pages: {exc}") from exc
+
             if len(extracted_text.strip()) < 20:
-                raise ValueError("I could not extract enough readable text from this PDF. Try a clearer PDF or paste the report text directly.")
+                raise ValueError("No readable text could be extracted from this PDF. Try a clearer PDF or paste the report text directly.")
+
+        elif is_image:
+            img_mime = content_type_lower if "image/" in content_type_lower else "image/png"
+            if "jpeg" in img_mime or "jpg" in img_mime:
+                img_mime = "image/jpeg"
+            elif "webp" in img_mime:
+                img_mime = "image/webp"
+            else:
+                img_mime = "image/png"
+
+            print("[LAB REPORT] Using image OCR")
+            try:
+                extracted_text = self._extract_text_from_image(file_bytes, img_mime)
+                print(f"[LAB REPORT] OCR text length: {len(extracted_text)}")
+            except Exception as exc:
+                raise ValueError(f"Image OCR processing failed: {exc}") from exc
+
+            if len(extracted_text.strip()) < 15:
+                raise ValueError("Could not read enough text from the uploaded lab report image.")
         else:
-            raise ValueError("Please upload a PNG, JPG, WEBP, or PDF lab report.")
+            raise ValueError("Unsupported file type. Please upload a PNG, JPG, WEBP, or PDF lab report.")
 
         return self.interpret(extracted_text, language=language, file_name=file_name, extra_warnings=warnings)
 
@@ -125,7 +182,9 @@ Return valid JSON with this shape:
         extracted_text = result.get("extracted_text")
         if isinstance(extracted_text, str) and extracted_text.strip():
             return extracted_text.strip()
-        raise ValueError("I could not read enough text from the uploaded lab report image.")
+        if isinstance(extracted_text, list) and extracted_text:
+            return "\n".join(str(item) for item in extracted_text)
+        raise ValueError("Could not read enough text from the uploaded lab report image.")
 
     def _save_response(
         self,
@@ -153,14 +212,23 @@ Return valid JSON with this shape:
 
     def _detect_markers(self, text: str) -> List[str]:
         candidates = [
-            "hemoglobin", "wbc", "rbc", "platelet", "creatinine", "urea", "bun",
-            "bilirubin", "alt", "ast", "alp", "sodium", "potassium", "chloride",
-            "glucose", "hba1c", "tsh", "vitamin d", "vitamin b12", "crp", "esr",
+            "hemoglobin", "wbc", "rbc", "platelet", "platelets", "hematocrit", "pcv", "mcv", "mch", "mchc", "rdw",
+            "creatinine", "urea", "bun", "egfr",
+            "bilirubin", "alt", "ast", "alp", "alkaline phosphatase", "total protein", "albumin",
+            "sodium", "potassium", "chloride",
+            "fasting glucose", "glucose", "hba1c", "tsh", "free t4", "free t3",
+            "vitamin d", "vitamin b12", "crp", "esr",
             "hdl", "ldl", "triglycerides", "cholesterol", "uric acid",
+            "urinalysis", "urine", "hematuria",
         ]
         lower = text.lower()
-        found = [item.upper() if len(item) <= 4 else item.title() for item in candidates if item in lower]
-        return found[:12]
+        found = []
+        for item in candidates:
+            if item in lower:
+                formatted = item.upper() if len(item) <= 4 else item.title()
+                if formatted not in found:
+                    found.append(formatted)
+        return found[:15]
 
     def _make_title(self, markers: List[str]) -> str:
         if markers:
@@ -168,23 +236,30 @@ Return valid JSON with this shape:
         return "Lab report interpretation"
 
     def _normalize_search_query(self, report_text: str, language: str) -> str:
-        needs_normalization = language.lower() != "english" or any(ord(char) > 127 for char in report_text)
-        if not needs_normalization:
-            return report_text
-
-        result = self.provider.generate_json(
-            f"""
-Normalize this lab report text into a concise English retrieval query.
+        if language.lower() != "english":
+            try:
+                result = self.provider.generate_json(
+                    f"""Normalize this lab report text into a concise English retrieval query.
 Preserve marker names, units, and numeric values.
 Return JSON with the key "english_query".
 
 Lab report text:
-{report_text}
+{report_text[:1500]}
 """,
-            system_prompt="You convert multilingual medical text into a concise English retrieval query without adding facts.",
-        )
-        english_query = result.get("english_query")
-        return english_query.strip() if isinstance(english_query, str) and english_query.strip() else report_text
+                    system_prompt="You convert multilingual medical text into a concise English retrieval query without adding facts.",
+                )
+                if not result.get("error"):
+                    english_query = result.get("english_query")
+                    if isinstance(english_query, str) and english_query.strip():
+                        return english_query.strip()
+            except Exception:
+                pass
+
+        # For English or fallback, build focused search query with detected markers and core lab terms
+        markers = self._detect_markers(report_text)
+        if markers:
+            return f"Lab report reference evaluation: {' '.join(markers)}"
+        return report_text[:500]
 
     def _timestamp(self) -> str:
         return datetime.now(timezone.utc).isoformat()

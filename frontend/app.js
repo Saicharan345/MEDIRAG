@@ -443,7 +443,7 @@ document.addEventListener("DOMContentLoaded", () => {
         analyzeBtn.textContent = "Analyze Image";
 
         if (!data) {
-            renderPrescriptionError("Unable to analyze the image.");
+            renderPrescriptionError(lastApiError || "Unable to analyze the image.");
             return;
         }
 
@@ -455,7 +455,10 @@ document.addEventListener("DOMContentLoaded", () => {
     async function handleLabInterpretation() {
         const reportText = labInput.value.trim();
         if (!reportText) {
-            renderLabError("Paste a lab report before starting interpretation.");
+            if (selectedLabFile) {
+                return handleLabFileUpload();
+            }
+            renderLabError("Paste a lab report before starting interpretation, or choose a file below.");
             return;
         }
 
@@ -476,7 +479,7 @@ document.addEventListener("DOMContentLoaded", () => {
         interpretLabBtn.textContent = "Interpret Lab Report";
 
         if (!data) {
-            renderLabError("Unable to interpret the lab report.");
+            renderLabError(lastApiError || "Unable to interpret the lab report.");
             return;
         }
 
@@ -493,7 +496,10 @@ document.addEventListener("DOMContentLoaded", () => {
 
         analyzeLabFileBtn.disabled = true;
         analyzeLabFileBtn.textContent = "Interpreting...";
-        labResults.innerHTML = loadingCard("Reading the uploaded lab report...");
+        if (interpretLabBtn) {
+            interpretLabBtn.disabled = true;
+        }
+        labResults.innerHTML = loadingCard("Reading and interpreting the uploaded lab report...");
 
         const formData = new FormData();
         formData.append("file", selectedLabFile);
@@ -506,9 +512,12 @@ document.addEventListener("DOMContentLoaded", () => {
 
         analyzeLabFileBtn.disabled = false;
         analyzeLabFileBtn.textContent = "Interpret Uploaded File";
+        if (interpretLabBtn) {
+            interpretLabBtn.disabled = false;
+        }
 
         if (!data) {
-            renderLabError("Unable to interpret the uploaded lab report file.");
+            renderLabError(lastApiError || "Unable to interpret the uploaded lab report file.");
             return;
         }
 
@@ -564,6 +573,7 @@ document.addEventListener("DOMContentLoaded", () => {
                 <div class="medicine-list">
                     ${medicines || `<div class="empty-state"><p>No medicines could be extracted confidently.</p></div>`}
                 </div>
+                ${data.disclaimer ? `<p class="citation-meta" style="font-size: 0.82rem; color: var(--text-muted); margin-top: 10px;">${escapeHtml(data.disclaimer)}</p>` : ""}
             </div>
         `;
     }
@@ -585,6 +595,7 @@ document.addEventListener("DOMContentLoaded", () => {
                     <div class="msg-content">${marked.parse(data.interpretation || "")}</div>
                 </div>
                 ${warnings ? `<div class="warning-box"><strong>Warnings</strong><ul>${warnings}</ul></div>` : ""}
+                ${data.disclaimer ? `<p class="citation-meta" style="font-size: 0.82rem; color: var(--text-muted); margin-top: 10px;">${escapeHtml(data.disclaimer)}</p>` : ""}
             </div>
         `;
     }
@@ -642,16 +653,28 @@ document.addEventListener("DOMContentLoaded", () => {
         });
     }
 
+    let lastApiError = null;
+
     async function fetchJson(url, options = {}) {
+        lastApiError = null;
         try {
             const response = await fetch(url, options);
-            const data = await response.json();
+            let data = null;
+            try {
+                data = await response.json();
+            } catch (jsonErr) {
+                // response body is not JSON
+            }
             if (!response.ok) {
-                throw new Error(data.detail || "Request failed.");
+                const detail = (data && data.detail) ? data.detail : `Server error (${response.status})`;
+                lastApiError = detail;
+                console.error(`[API Error ${response.status}] ${url}:`, detail);
+                return null;
             }
             return data;
         } catch (error) {
-            console.error(error);
+            lastApiError = error.message || "Failed to reach server. Please check your connection.";
+            console.error(`[Network Error] ${url}:`, error);
             return null;
         }
     }

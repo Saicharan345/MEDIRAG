@@ -44,13 +44,30 @@ class GroqProvider(LLMProvider):
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        completion = self.client.chat.completions.create(
-            model=config.GROQ_TEXT_MODEL,
-            messages=messages,
-            temperature=0.2,
-            max_completion_tokens=900,
-        )
-        return completion.choices[0].message.content or ""
+        models_to_try = [config.GROQ_TEXT_MODEL]
+        for fallback in ["qwen/qwen3.8-27b", "openai/gpt-oss-120b", "openai/gpt-oss-20b"]:
+            if fallback not in models_to_try:
+                models_to_try.append(fallback)
+
+        last_error = None
+        for model in models_to_try:
+            try:
+                completion = self.client.chat.completions.create(
+                    model=model,
+                    messages=messages,
+                    temperature=0.2,
+                    max_completion_tokens=getattr(config, "GROQ_MAX_TOKENS", 950),
+                )
+                return completion.choices[0].message.content or ""
+            except Exception as exc:
+                last_error = exc
+                err_str = str(exc)
+                if "model_not_found" in err_str or "404" in err_str or "does not exist" in err_str:
+                    print(f"[LLM] Model '{model}' not found on Groq. Trying next candidate...")
+                    continue
+                return f"Groq API error: {exc}"
+
+        return f"Groq API error: {last_error}"
 
     def generate_json(self, prompt: str, system_prompt: Optional[str] = None) -> Dict[str, Any]:
         if not self.client:
@@ -61,45 +78,95 @@ class GroqProvider(LLMProvider):
             messages.append({"role": "system", "content": system_prompt})
         messages.append({"role": "user", "content": prompt})
 
-        completion = self.client.chat.completions.create(
-            model=config.GROQ_TEXT_MODEL,
-            messages=messages,
-            temperature=0.1,
-            max_completion_tokens=800,
-            response_format={"type": "json_object"},
-        )
+        max_tokens = min(getattr(config, "GROQ_MAX_TOKENS", 950), 950)
+        models_to_try = [config.GROQ_TEXT_MODEL]
+        for fallback in ["qwen/qwen3.8-27b", "openai/gpt-oss-120b"]:
+            if fallback not in models_to_try:
+                models_to_try.append(fallback)
 
-        content = completion.choices[0].message.content or "{}"
-        return self._safe_json_loads(content)
+        last_error = None
+        for model in models_to_try:
+            for attempt in range(2):
+                try:
+                    curr_messages = messages
+                    if attempt > 0:
+                        curr_messages = [
+                            *messages[:-1],
+                            {"role": "user", "content": prompt + "\n\nNote: Be concise (under 350 words) and ensure you close all JSON quotes and brackets properly."}
+                        ]
+                    completion = self.client.chat.completions.create(
+                        model=model,
+                        messages=curr_messages,
+                        temperature=0.1,
+                        max_completion_tokens=max_tokens,
+                        response_format={"type": "json_object"},
+                    )
+                    content = completion.choices[0].message.content or "{}"
+                    return self._safe_json_loads(content)
+                except Exception as exc:
+                    last_error = exc
+                    err_str = str(exc)
+                    if "model_not_found" in err_str or "404" in err_str or "does not exist" in err_str:
+                        print(f"[LLM] Model '{model}' not found on Groq for JSON. Trying next candidate...")
+                        break
+                    if attempt == 0 and ("429" in err_str or "json_validate_failed" in err_str or "tokens" in err_str):
+                        import time
+                        time.sleep(2)
+                        continue
+                    return {"error": f"Groq API error: {exc}"}
+
+        return {"error": f"Groq API rate limit or model error: {last_error}"}
 
     def analyze_image(self, image_bytes: bytes, mime_type: str, prompt: str) -> Dict[str, Any]:
         if not self.client:
             return {"error": "Groq API key not configured. Please add GROQ_API_KEY to your .env file."}
 
         encoded = base64.b64encode(image_bytes).decode("utf-8")
-        completion = self.client.chat.completions.create(
-            model=config.GROQ_VISION_MODEL,
-            messages=[
-                {
-                    "role": "user",
-                    "content": [
-                        {"type": "text", "text": prompt},
-                        {
-                            "type": "image_url",
-                            "image_url": {
-                                "url": f"data:{mime_type};base64,{encoded}"
-                            },
-                        },
-                    ],
-                }
-            ],
-            temperature=0.1,
-            max_completion_tokens=1200,
-            response_format={"type": "json_object"},
-        )
+        max_tokens = min(getattr(config, "GROQ_MAX_TOKENS", 950), 950)
 
-        content = completion.choices[0].message.content or "{}"
-        return self._safe_json_loads(content)
+        models_to_try = [config.GROQ_VISION_MODEL]
+        if "qwen/qwen3.8-27b" not in models_to_try:
+            models_to_try.append("qwen/qwen3.8-27b")
+
+        last_error = None
+        for model in models_to_try:
+            for attempt in range(2):
+                try:
+                    completion = self.client.chat.completions.create(
+                        model=model,
+                        messages=[
+                            {
+                                "role": "user",
+                                "content": [
+                                    {"type": "text", "text": prompt},
+                                    {
+                                        "type": "image_url",
+                                        "image_url": {
+                                            "url": f"data:{mime_type};base64,{encoded}"
+                                        },
+                                    },
+                                ],
+                            }
+                        ],
+                        temperature=0.1,
+                        max_completion_tokens=max_tokens,
+                        response_format={"type": "json_object"},
+                    )
+                    content = completion.choices[0].message.content or "{}"
+                    return self._safe_json_loads(content)
+                except Exception as exc:
+                    last_error = exc
+                    err_str = str(exc)
+                    if "model_not_found" in err_str or "404" in err_str or "does not exist" in err_str:
+                        print(f"[VISION] Model '{model}' not available on Groq (404). Trying fallback model...")
+                        break
+                    if attempt == 0 and ("429" in err_str or "json_validate_failed" in err_str or "tokens" in err_str):
+                        import time
+                        time.sleep(2)
+                        continue
+                    return {"error": f"Groq Vision API error: {exc}"}
+
+        return {"error": f"Groq Vision API error: {last_error or 'Rate limit or unavailable vision model.'}"}
 
     def supports_vision(self) -> bool:
         return True
